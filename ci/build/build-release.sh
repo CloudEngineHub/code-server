@@ -79,7 +79,15 @@ EOF
   mv npm-shrinkwrap.json "$RELEASE_PATH"
 
   if [ "$KEEP_MODULES" = 1 ]; then
-    rsync node_modules/ "$RELEASE_PATH/node_modules"
+    local rsync_opts=(-a)
+    if [[ ${DEBUG-} = 1 ]]; then
+      rsync_opts+=(-vh)
+    fi
+    # If we build from source, exclude the prebuilds.
+    if [[ ${npm_config_build_from_source-} = true ]]; then
+      rsync_opts+=(--exclude /argon2/prebuilds)
+    fi
+    rsync "${rsync_opts[@]}" node_modules/ "$RELEASE_PATH/node_modules"
     # Remove dev dependencies.
     pushd "$RELEASE_PATH"
     npm prune --production
@@ -92,7 +100,7 @@ EOF
 bundle_vscode() {
   mkdir -p "$VSCODE_OUT_PATH"
 
-  local rsync_opts=()
+  local rsync_opts=(-a)
   if [[ ${DEBUG-} = 1 ]]; then
     rsync_opts+=(-vh)
   fi
