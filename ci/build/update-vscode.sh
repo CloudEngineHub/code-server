@@ -19,7 +19,7 @@ function update_vscode() {
   pushd lib/vscode
   if ! git checkout 2>&1 "$target_vscode_version" ; then
     echo "$target_vscode_version does not exist locally, fetching..."
-    git fetch --all --prune
+    git fetch --all --prune --tags
     echo "Checking out $target_vscode_version again..."
     git checkout "$target_vscode_version"
   fi
@@ -132,12 +132,12 @@ function main() {
     fi
     target_vscode_version="${VERSION#v}"
     steps+=(
-      "Update VS Code to $target_vscode_version" "update_vscode"
-      "Refresh VS Code patches" "refresh_patches"
+      "Update Code to $target_vscode_version" "update_vscode"
+      "Refresh Code patches" "refresh_patches"
     )
   else
     target_vscode_version="$(git -C lib/vscode describe --tags --exact-match)"
-    echo "Detected VS Code version $target_vscode_version"
+    echo "Detected Code version $target_vscode_version"
   fi
 
   steps+=(
