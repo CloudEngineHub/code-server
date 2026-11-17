@@ -22,10 +22,12 @@ concurrency:
 jobs:
   npm:
     runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      # Required so GitHub can issue an OIDC token for trusted publishing.
+      id-token: write
     env:
       TAG: ${{ inputs.version || github.ref_name }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
       NPM_ENVIRONMENT: "production"
 
     steps:
@@ -37,6 +39,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
         with:
           node-version-file: .node-version
+          registry-url: "https://registry.npmjs.org"
 
       - uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f # v1.13
         with:
@@ -47,15 +50,14 @@ jobs:
 
       - run: tar -xzf release-npm-package/package.tar.gz
       - run: |
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
           pushd release
           npm publish --tag latest --access public
 
   aur:
     runs-on: ubuntu-latest
+    environment: release
     timeout-minutes: 10
     env:
-      GH_TOKEN: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN }}
       TAG: ${{ inputs.version || github.ref_name }}
 
     steps:
@@ -63,11 +65,22 @@ jobs:
         run: |
           echo "VERSION=${TAG#v}" >> $GITHUB_ENV
 
+      - name: Generate coder-automations app token
+        id: app_token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.CODER_AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.CODER_AUTOMATION_APP_PRIVATE_KEY }}
+          owner: coder
+          repositories: code-server-aur
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Checkout code-server-aur repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           repository: "cdrci/code-server-aur"
-          token: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN }}
+          token: ${{ steps.app_token.outputs.token }}
           ref: "master"
 
       - name: Configure git
@@ -90,15 +103,29 @@ jobs:
           srcinfo: true
 
       - name: Open PR
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           git checkout -b update-version-${{ env.VERSION }}
           git add .
           git commit -m "Update to ${{ env.VERSION }}"
           git push -u origin $(git branch --show)
-          gh pr create --repo coder/code-server-aur --title "Update to ${{ env.VERSION }}" --body "PR opened by @$GITHUB_ACTOR" --assignee $GITHUB_ACTOR
+          gh pr create \
+            --repo coder/code-server-aur \
+            --title "Update to ${{ env.VERSION }}" \
+            --body "PR opened by @$GITHUB_ACTOR" \
+            --assignee $GITHUB_ACTOR
 
   docker:
     runs-on: ubuntu-latest
+    # Scopes the Docker Hub OIDC subject claim to
+    # repo:coder/code-server:environment:release.
+    environment: release
+    permissions:
+      # Required so GitHub can issue an OIDC token for the Docker Hub login.
+      id-token: write
+      # Required to push images to ghcr.io.
+      packages: write
     env:
       GITHUB_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.version || github.ref_name }}
@@ -112,10 +139,16 @@ jobs:
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+      # Authenticates to Docker Hub via OIDC (workload identity federation)
+      # instead of a stored username/password. Requires an OIDC connection
+      # configured for the org in Docker Home (Identity & auth > OIDC
+      # connections) and the `id-token: write` permission above.
+      - name: Login to Docker Hub with OIDC
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          username: codercom
+        env:
+          DOCKERHUB_OIDC_CONNECTIONID: ${{ vars.DOCKERHUB_OIDC_CONNECTIONID }}
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
@@ -139,8 +172,10 @@ jobs:
 
   repo:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # To push the branch.
+      pull-requests: write # To open the PR.
     env:
-      GH_TOKEN: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN }}
       TAG: ${{ inputs.version || github.ref_name }}
     needs: docker
 
@@ -154,6 +189,8 @@ jobs:
       - run: ./ci/build/update-repo.sh
 
       - name: Open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name cdrci
           git config --global user.email opensource@coder.com
